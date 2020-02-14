@@ -8,6 +8,7 @@ PACKAGES:=$(shell $(GOCMD) list ./... | grep -v /testdata/)
 SRC:=$(shell find . -type f -name '*.go' -not -path "*/vendor/*")
 ARCHIVE_NAME=pack-$(PACK_VERSION)
 
+
 export GOFLAGS:=$(GOFLAGS)
 
 all: clean verify test build
@@ -15,7 +16,7 @@ all: clean verify test build
 build:
 	@echo "> Building..."
 	mkdir -p ./out
-	$(GOENV) $(GOCMD) build -ldflags "-X 'github.com/buildpacks/pack/cmd.Version=${PACK_VERSION}'" -o ./out/$(PACK_BIN) -a ./cmd/pack
+	$(GOENV) $(GOCMD) build -gcflags="all=-N -l" -ldflags "-X 'github.com/buildpacks/pack/cmd.Version=${PACK_VERSION}'" -o ./out/$(PACK_BIN) -a ./cmd/pack
 
 package:
 	tar czf ./out/$(ARCHIVE_NAME).tgz -C out/ pack
