@@ -15,9 +15,20 @@ const (
 	platformDir    = "/platform"
 )
 
-func (l *Lifecycle) Detect(ctx context.Context, networkMode string, volumes []string) error {
-	detect, err := l.NewPhase(
-		"detector",
+type RunnerCleaner interface {
+	Run(ctx context.Context) error
+	Cleanup() error
+}
+
+type PhaseFactory interface {
+	New(name string, pcp *PhaseConfigProvider) (RunnerCleaner, error)
+}
+
+func (l *Lifecycle) Detect(ctx context.Context, networkMode string, volumes []string, phaseFactory PhaseFactory) error {
+	phaseName := "detector"
+
+	configProvider, err := NewPhaseConfigProvider(
+		phaseName,
 		WithArgs(
 			l.withLogLevel(
 				"-app", appDir,
@@ -30,13 +41,24 @@ func (l *Lifecycle) Detect(ctx context.Context, networkMode string, volumes []st
 	if err != nil {
 		return err
 	}
+
+	detect, err := phaseFactory.New(
+		phaseName,
+		configProvider,
+	)
+	if err != nil {
+		return err
+	}
+
 	defer detect.Cleanup()
 	return detect.Run(ctx)
 }
 
-func (l *Lifecycle) Restore(ctx context.Context, cacheName string) error {
-	restore, err := l.NewPhase(
-		"restorer",
+func (l *Lifecycle) Restore(ctx context.Context, cacheName string, phaseFactory PhaseFactory) error {
+	phaseName := "restorer"
+
+	configProvider, err := NewPhaseConfigProvider(
+		phaseName,
 		WithDaemonAccess(),
 		WithArgs(
 			l.withLogLevel(
@@ -49,12 +71,21 @@ func (l *Lifecycle) Restore(ctx context.Context, cacheName string) error {
 	if err != nil {
 		return err
 	}
+
+	restore, err := phaseFactory.New(
+		phaseName,
+		configProvider,
+	)
+	if err != nil {
+		return err
+	}
+
 	defer restore.Cleanup()
 	return restore.Run(ctx)
 }
 
-func (l *Lifecycle) Analyze(ctx context.Context, repoName, cacheName string, publish, clearCache bool) error {
-	analyze, err := l.newAnalyze(repoName, cacheName, publish, clearCache)
+func (l *Lifecycle) Analyze(ctx context.Context, repoName, cacheName string, publish, clearCache bool, phaseFactory PhaseFactory) error {
+	analyze, err := l.newAnalyze(repoName, cacheName, publish, clearCache, phaseFactory)
 	if err != nil {
 		return err
 	}
@@ -62,7 +93,7 @@ func (l *Lifecycle) Analyze(ctx context.Context, repoName, cacheName string, pub
 	return analyze.Run(ctx)
 }
 
-func (l *Lifecycle) newAnalyze(repoName, cacheName string, publish, clearCache bool) (*Phase, error) {
+func (l *Lifecycle) newAnalyze(repoName, cacheName string, publish, clearCache bool, phaseFactory PhaseFactory) (RunnerCleaner, error) {
 	args := []string{
 		"-layers", layersDir,
 		repoName,
@@ -73,17 +104,28 @@ func (l *Lifecycle) newAnalyze(repoName, cacheName string, publish, clearCache b
 		args = append([]string{"-cache-dir", cacheDir}, args...)
 	}
 
+	phaseName := "analyzer"
+
 	if publish {
-		return l.NewPhase(
-			"analyzer",
+		configProvider, err := NewPhaseConfigProvider(
+			phaseName,
 			WithRegistryAccess(repoName),
 			WithRoot(),
 			WithArgs(args...),
 			WithBinds(fmt.Sprintf("%s:%s", cacheName, cacheDir)),
 		)
+		if err != nil {
+			return nil, err
+		}
+
+		return phaseFactory.New(
+			phaseName,
+			configProvider,
+		)
 	}
-	return l.NewPhase(
-		"analyzer",
+
+	configProvider, err := NewPhaseConfigProvider(
+		phaseName,
 		WithDaemonAccess(),
 		WithArgs(
 			l.withLogLevel(
@@ -95,15 +137,25 @@ func (l *Lifecycle) newAnalyze(repoName, cacheName string, publish, clearCache b
 		),
 		WithBinds(fmt.Sprintf("%s:%s", cacheName, cacheDir)),
 	)
+	if err != nil {
+		return nil, err
+	}
+
+	return phaseFactory.New(
+		phaseName,
+		configProvider,
+	)
 }
 
 func prependArg(arg string, args []string) []string {
 	return append([]string{arg}, args...)
 }
 
-func (l *Lifecycle) Build(ctx context.Context, networkMode string, volumes []string) error {
-	build, err := l.NewPhase(
-		"builder",
+func (l *Lifecycle) Build(ctx context.Context, networkMode string, volumes []string, phaseFactory PhaseFactory) error {
+	phaseName := "builder"
+
+	configProvider, err := NewPhaseConfigProvider(
+		phaseName,
 		WithArgs(
 			"-layers", layersDir,
 			"-app", appDir,
@@ -115,12 +167,21 @@ func (l *Lifecycle) Build(ctx context.Context, networkMode string, volumes []str
 	if err != nil {
 		return err
 	}
+
+	build, err := phaseFactory.New(
+		phaseName,
+		configProvider,
+	)
+	if err != nil {
+		return err
+	}
+
 	defer build.Cleanup()
 	return build.Run(ctx)
 }
 
-func (l *Lifecycle) Export(ctx context.Context, repoName string, runImage string, publish bool, launchCacheName, cacheName string) error {
-	export, err := l.newExport(repoName, runImage, publish, launchCacheName, cacheName)
+func (l *Lifecycle) Export(ctx context.Context, repoName string, runImage string, publish bool, launchCacheName, cacheName string, phaseFactory PhaseFactory) error {
+	export, err := l.newExport(repoName, runImage, publish, launchCacheName, cacheName, phaseFactory)
 	if err != nil {
 		return err
 	}
@@ -128,7 +189,7 @@ func (l *Lifecycle) Export(ctx context.Context, repoName string, runImage string
 	return export.Run(ctx)
 }
 
-func (l *Lifecycle) newExport(repoName, runImage string, publish bool, launchCacheName, cacheName string) (*Phase, error) {
+func (l *Lifecycle) newExport(repoName, runImage string, publish bool, launchCacheName, cacheName string, phaseFactory PhaseFactory) (RunnerCleaner, error) {
 	args := []string{
 		"-image", runImage,
 		"-cache-dir", cacheDir,
@@ -139,9 +200,11 @@ func (l *Lifecycle) newExport(repoName, runImage string, publish bool, launchCac
 
 	binds := []string{fmt.Sprintf("%s:%s", cacheName, cacheDir)}
 
+	phaseName := "exporter"
+
 	if publish {
-		return l.NewPhase(
-			"exporter",
+		configProvider, err := NewPhaseConfigProvider(
+			phaseName,
 			WithRegistryAccess(repoName, runImage),
 			WithArgs(
 				l.withLogLevel(args...)...,
@@ -149,17 +212,34 @@ func (l *Lifecycle) newExport(repoName, runImage string, publish bool, launchCac
 			WithRoot(),
 			WithBinds(binds...),
 		)
+		if err != nil {
+			return nil, err
+		}
+
+		return phaseFactory.New(
+			phaseName,
+			configProvider,
+		)
 	}
 
 	args = append([]string{"-daemon", "-launch-cache", launchCacheDir}, args...)
 	binds = append(binds, fmt.Sprintf("%s:%s", launchCacheName, launchCacheDir))
-	return l.NewPhase(
-		"exporter",
+
+	configProvider, err := NewPhaseConfigProvider(
+		phaseName,
 		WithDaemonAccess(),
 		WithArgs(
 			l.withLogLevel(args...)...,
 		),
 		WithBinds(binds...),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return phaseFactory.New(
+		phaseName,
+		configProvider,
 	)
 }
 
